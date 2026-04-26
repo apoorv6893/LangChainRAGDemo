@@ -2,20 +2,22 @@ import streamlit as st
 import tempfile
 import time
 
-# LangChain imports
+# LangChain
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_community.vectorstores import DocArrayInMemorySearch
 
-# Models
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+# FREE embeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
+
+# Gemini LLM
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 # -------------------------------
-# Page Config
+# Page config
 # -------------------------------
 st.set_page_config(page_title="RAG Demo", layout="wide")
-st.title("🔍 RAG Demo (End-to-End)")
+st.title("🔍 RAG Demo (Free + Gemini)")
 
 st.markdown("""
 ### 🧠 What happens behind the scenes?
@@ -23,10 +25,10 @@ st.markdown("""
 1. 📄 Read documents  
 2. ✂️ Split into chunks  
 3. 🔢 Convert text into numbers (embeddings)  
-4. 🎯 Find relevant chunks  
+4. 🎯 Retrieve relevant chunks  
 5. 🤖 Answer using ONLY those chunks  
 
-This reduces hallucination.
+No paid embedding APIs used.
 """)
 
 # -------------------------------
@@ -34,27 +36,15 @@ This reduces hallucination.
 # -------------------------------
 st.sidebar.header("⚙️ Settings")
 
-provider = st.sidebar.selectbox(
-    "LLM Provider",
-    ["OpenAI", "Gemini"],
-    help="Which model generates the final answer"
-)
-
-# 🔥 Separate keys (IMPORTANT)
-openai_key = st.sidebar.text_input(
-    "OpenAI API Key (for embeddings)",
-    type="password"
-)
-
 gemini_key = st.sidebar.text_input(
-    "Gemini API Key (for LLM)",
+    "Gemini API Key",
     type="password"
 )
 
 model = st.sidebar.text_input(
     "Model",
-    value="gpt-4o-mini" if provider == "OpenAI" else "gemini-1.5-flash",
-    help="Example: gemini-1.5-flash or gemini-2.5-flash"
+    value="gemini-1.5-flash",
+    help="Try gemini-1.5-flash or gemini-2.5-flash"
 )
 
 chunk_size = st.sidebar.slider("Chunk Size", 200, 1500, 500)
@@ -67,7 +57,7 @@ debug_mode = st.sidebar.checkbox("Debug Mode")
 # Inputs
 # -------------------------------
 uploaded_files = st.file_uploader(
-    "Upload PDF or TXT",
+    "Upload PDF or TXT files",
     type=["pdf", "txt"],
     accept_multiple_files=True
 )
@@ -95,19 +85,19 @@ def load_documents(files):
     return docs
 
 
+@st.cache_resource
 def get_embeddings():
-    return OpenAIEmbeddings(api_key=openai_key)
+    return HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    )
 
 
 def get_llm():
-    if provider == "OpenAI":
-        return ChatOpenAI(api_key=openai_key, model=model, temperature=0)
-    else:
-        return ChatGoogleGenerativeAI(
-            google_api_key=gemini_key,
-            model=model,
-            temperature=0
-        )
+    return ChatGoogleGenerativeAI(
+        google_api_key=gemini_key,
+        model=model,
+        temperature=0
+    )
 
 
 def build_prompt(context, query):
@@ -115,7 +105,7 @@ def build_prompt(context, query):
 You are a strict assistant.
 
 Answer ONLY from the context below.
-If answer is not present, say "I don't know."
+If the answer is not present, say "I don't know."
 
 Context:
 {context}
@@ -124,13 +114,11 @@ Question:
 {query}
 """
 
-
 # -------------------------------
 # Main
 # -------------------------------
 if run:
 
-    # Validation
     if not uploaded_files:
         st.error("Upload documents")
         st.stop()
@@ -139,12 +127,8 @@ if run:
         st.error("Enter a question")
         st.stop()
 
-    if not openai_key:
-        st.error("OpenAI key required for embeddings")
-        st.stop()
-
-    if provider == "Gemini" and not gemini_key:
-        st.error("Gemini key required")
+    if not gemini_key:
+        st.error("Enter Gemini API key")
         st.stop()
 
     with st.spinner("Processing..."):
@@ -181,7 +165,6 @@ if run:
     # -------------------------------
     # Output
     # -------------------------------
-
     st.subheader("✅ Answer (with RAG)")
     st.write(rag_response.content)
 
@@ -195,16 +178,18 @@ if run:
 **Chunk {i+1}**
 
 📊 Score: {score:.4f}  
-👉 Lower = more relevant
+👉 Lower = better match
 """)
         st.write(doc.page_content[:400])
 
+    # Latency
     col1, col2, col3 = st.columns(3)
     col1.metric("Embedding", f"{embed_time:.2f}s")
     col2.metric("Retrieval", f"{retrieval_time:.2f}s")
     col3.metric("LLM", f"{llm_time:.2f}s")
 
+    # Debug
     if debug_mode:
-        st.subheader("🛠 Debug")
+        st.subheader("🛠 Debug Info")
         st.code(context[:2000])
         st.write(f"Chunks: {len(chunks)}")
