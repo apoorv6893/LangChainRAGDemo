@@ -1,23 +1,19 @@
 import streamlit as st
-
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 # -------------------------------
-# Page Config
+# Page
 # -------------------------------
-st.set_page_config(page_title="Hierarchical Agents Demo", layout="wide")
+st.set_page_config(page_title="Prompt Quality Agent", layout="wide")
+st.title("🧠 Prompt Quality Agent")
 
-st.title("🧠 Hierarchical Agents Demo")
 st.markdown("""
-**Pattern: Orchestrator + Specialized Agents**
-
-Flow:
-1. Orchestrator breaks task  
-2. Delegates to:
-   - Research Agent  
-   - Writing Agent  
-   - Review Agent  
-3. Combines outputs → Final answer
+This app:
+1. Evaluates your prompt
+2. Scores it (0–10)
+3. Explains what's missing
+4. Decides whether to fix it
+5. Improves it if needed
 """)
 
 # -------------------------------
@@ -27,13 +23,15 @@ st.sidebar.header("⚙️ Settings")
 
 api_key = st.sidebar.text_input("Gemini API Key", type="password")
 
-model = st.sidebar.text_input(
-    "Gemini Model (exact name)",
-    value="models/gemini-1.5-flash",
-    help="Example: models/gemini-1.5-flash"
+model = st.sidebar.selectbox(
+    "Select Gemini Model",
+    [
+        "models/gemini-1.5-flash",
+        "models/gemini-1.5-pro"
+    ]
 )
 
-temperature = st.sidebar.slider("Creativity (temperature)", 0.0, 1.0, 0.2)
+temperature = st.sidebar.slider("Creativity", 0.0, 1.0, 0.2)
 
 # -------------------------------
 # LLM
@@ -49,76 +47,52 @@ def get_llm():
 # AGENTS
 # -------------------------------
 
-def research_agent(llm, query):
-    prompt = f"""
-You are a RESEARCH agent.
+def evaluate_prompt(llm, prompt):
+    eval_prompt = f"""
+You are a PROMPT QUALITY EVALUATOR.
 
-Task:
-- Gather facts
-- Provide bullet points
-- Be concise
+Evaluate the prompt based on:
+- clarity
+- specificity
+- context
+- structure
 
-Query:
-{query}
+Return STRICT JSON:
+
+{{
+  "score": (0-10),
+  "reason": "...",
+  "missing": "...",
+  "verdict": "good" or "needs_improvement"
+}}
+
+Prompt:
+{prompt}
 """
-    return llm.invoke(prompt).content
+    return llm.invoke(eval_prompt).content
 
 
-def writing_agent(llm, research_output):
-    prompt = f"""
-You are a WRITING agent.
+def improve_prompt(llm, prompt, missing):
+    fix_prompt = f"""
+You are a PROMPT IMPROVEMENT AGENT.
 
-Task:
-- Convert research into structured answer
-- Make it readable
-- Add flow
+Improve the prompt by fixing:
+{missing}
 
-Input:
-{research_output}
+Keep intent same but make it clearer and more effective.
+
+Original Prompt:
+{prompt}
 """
-    return llm.invoke(prompt).content
-
-
-def review_agent(llm, draft):
-    prompt = f"""
-You are a REVIEW agent.
-
-Task:
-- Check factual consistency
-- Improve clarity
-- Fix errors
-- Output final polished answer
-
-Draft:
-{draft}
-"""
-    return llm.invoke(prompt).content
+    return llm.invoke(fix_prompt).content
 
 
 # -------------------------------
-# ORCHESTRATOR
+# UI
 # -------------------------------
-def orchestrator(llm, user_query):
-    steps = {}
+user_prompt = st.text_area("Enter a prompt")
 
-    # Step 1: Research
-    steps["research"] = research_agent(llm, user_query)
-
-    # Step 2: Writing
-    steps["writing"] = writing_agent(llm, steps["research"])
-
-    # Step 3: Review
-    steps["review"] = review_agent(llm, steps["writing"])
-
-    return steps
-
-
-# -------------------------------
-# UI INPUT
-# -------------------------------
-user_query = st.text_area("Enter your task")
-
-run = st.button("🚀 Run Agent System")
+run = st.button("🚀 Analyze Prompt")
 
 # -------------------------------
 # MAIN
@@ -126,41 +100,37 @@ run = st.button("🚀 Run Agent System")
 if run:
 
     if not api_key:
-        st.error("Enter Gemini API key")
+        st.error("Enter API key")
         st.stop()
 
-    if not user_query:
-        st.error("Enter a task")
+    if not user_prompt:
+        st.error("Enter a prompt")
         st.stop()
 
-    try:
-        llm = get_llm()
+    llm = get_llm()
 
-        with st.spinner("Orchestrator running..."):
-            results = orchestrator(llm, user_query)
+    with st.spinner("Evaluating prompt..."):
+        evaluation = evaluate_prompt(llm, user_prompt)
 
-        # -------------------------------
-        # OUTPUT
-        # -------------------------------
-        st.subheader("🧠 Orchestrator Output")
+    st.subheader("📊 Evaluation Output")
+    st.code(evaluation)
 
-        col1, col2, col3 = st.columns(3)
+    # crude parsing (simple approach)
+    eval_lower = evaluation.lower()
 
-        with col1:
-            st.markdown("### 🔍 Research Agent")
-            st.write(results["research"])
+    if "needs_improvement" in eval_lower or '"score":' in eval_lower:
 
-        with col2:
-            st.markdown("### ✍️ Writing Agent")
-            st.write(results["writing"])
+        if "needs_improvement" in eval_lower:
+            st.warning("⚠️ Prompt needs improvement")
 
-        with col3:
-            st.markdown("### ✅ Review Agent")
-            st.write(results["review"])
+            with st.spinner("Improving prompt..."):
+                improved = improve_prompt(llm, user_prompt, evaluation)
 
-        st.markdown("---")
-        st.subheader("🎯 Final Answer")
-        st.success(results["review"])
+            st.subheader("✨ Improved Prompt")
+            st.success(improved)
 
-    except Exception as e:
-        st.error(f"Error: {e}")
+        else:
+            st.success("✅ Prompt looks good")
+
+    else:
+        st.info("Could not parse evaluation clearly. Showing raw output.")
