@@ -1,135 +1,166 @@
 import streamlit as st
-from langchain.prompts import PromptTemplate
-from langchain_community.llms import HuggingFaceHub
-from langchain.text_splitter import RecursiveCharacterTextSplitter
 
-st.set_page_config(page_title="LangChain Teaching Demo", layout="wide")
-st.title("🧠 LangChain Teaching Demo (Stable Version)")
+from langchain_google_genai import ChatGoogleGenerativeAI
 
+# -------------------------------
+# Page Config
+# -------------------------------
+st.set_page_config(page_title="Hierarchical Agents Demo", layout="wide")
+
+st.title("🧠 Hierarchical Agents Demo")
 st.markdown("""
-This demo shows:
-1. Prompt Templates  
-2. LLM Calls  
-3. Chains  
-4. Chunking  
-5. RAG vs No-RAG  
+**Pattern: Orchestrator + Specialized Agents**
+
+Flow:
+1. Orchestrator breaks task  
+2. Delegates to:
+   - Research Agent  
+   - Writing Agent  
+   - Review Agent  
+3. Combines outputs → Final answer
 """)
 
-# ---------------- Sidebar ----------------
+# -------------------------------
+# Sidebar
+# -------------------------------
 st.sidebar.header("⚙️ Settings")
 
-hf_key = st.sidebar.text_input("HuggingFace API Key", type="password")
+api_key = st.sidebar.text_input("Gemini API Key", type="password")
 
-model_repo = st.sidebar.text_input(
-    "Model Repo",
-    value="google/flan-t5-large",
-    help="Free and reliable model"
+model = st.sidebar.text_input(
+    "Gemini Model (exact name)",
+    value="models/gemini-1.5-flash",
+    help="Example: models/gemini-1.5-flash"
 )
 
-chunk_size = st.sidebar.slider("Chunk Size", 200, 1000, 500)
-chunk_overlap = st.sidebar.slider("Chunk Overlap", 0, 200, 50)
+temperature = st.sidebar.slider("Creativity (temperature)", 0.0, 1.0, 0.2)
 
-# ---------------- LLM ----------------
+# -------------------------------
+# LLM
+# -------------------------------
 def get_llm():
-    return HuggingFaceHub(
-        repo_id=model_repo,
-        huggingfacehub_api_token=hf_key,
-        model_kwargs={"temperature": 0}
+    return ChatGoogleGenerativeAI(
+        google_api_key=api_key,
+        model=model,
+        temperature=temperature
     )
 
-# ---------------- SECTION 1 ----------------
-st.header("1️⃣ Prompt Template → LLM")
+# -------------------------------
+# AGENTS
+# -------------------------------
 
-user_input = st.text_input("Enter a question")
+def research_agent(llm, query):
+    prompt = f"""
+You are a RESEARCH agent.
 
-prompt_template = PromptTemplate.from_template(
-    "Explain simply:\n{question}"
-)
+Task:
+- Gather facts
+- Provide bullet points
+- Be concise
 
-if st.button("Run Prompt"):
-    if not hf_key:
-        st.error("Enter HuggingFace API key")
-    else:
-        llm = get_llm()
-        prompt = prompt_template.format(question=user_input)
-
-        st.subheader("📜 Prompt")
-        st.code(prompt)
-
-        response = llm.invoke(prompt)
-
-        st.subheader("🤖 Output")
-        st.write(response)
-
-# ---------------- SECTION 2 ----------------
-st.header("2️⃣ Chain")
-
-chain_input = st.text_input("Enter text")
-
-if st.button("Run Chain"):
-    if not hf_key:
-        st.error("Enter API key")
-    else:
-        llm = get_llm()
-
-        step1 = llm.invoke(f"Extract key points:\n{chain_input}")
-        step2 = llm.invoke(f"Summarize:\n{step1}")
-
-        st.write("Step 1:", step1)
-        st.write("Step 2:", step2)
-
-# ---------------- SECTION 3 ----------------
-st.header("3️⃣ Chunking")
-
-text = st.text_area("Paste text")
-
-if text:
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap
-    )
-
-    chunks = splitter.split_text(text)
-
-    st.write(f"Chunks: {len(chunks)}")
-
-    for i, c in enumerate(chunks[:5]):
-        st.markdown(f"**Chunk {i+1}**")
-        st.write(c)
-
-# ---------------- SECTION 4 ----------------
-st.header("4️⃣ RAG vs No-RAG")
-
-rag_query = st.text_input("Ask a question")
-
-if st.button("Compare"):
-    if not hf_key:
-        st.error("Enter API key")
-    elif not text:
-        st.error("Paste text first")
-    else:
-        llm = get_llm()
-        chunks = splitter.split_text(text)
-        context = chunks[0]
-
-        no_rag = llm.invoke(rag_query)
-
-        rag_prompt = f"""
-Answer ONLY using this:
-{context}
-
-Question:
-{rag_query}
+Query:
+{query}
 """
+    return llm.invoke(prompt).content
 
-        rag = llm.invoke(rag_prompt)
 
-        col1, col2 = st.columns(2)
+def writing_agent(llm, research_output):
+    prompt = f"""
+You are a WRITING agent.
+
+Task:
+- Convert research into structured answer
+- Make it readable
+- Add flow
+
+Input:
+{research_output}
+"""
+    return llm.invoke(prompt).content
+
+
+def review_agent(llm, draft):
+    prompt = f"""
+You are a REVIEW agent.
+
+Task:
+- Check factual consistency
+- Improve clarity
+- Fix errors
+- Output final polished answer
+
+Draft:
+{draft}
+"""
+    return llm.invoke(prompt).content
+
+
+# -------------------------------
+# ORCHESTRATOR
+# -------------------------------
+def orchestrator(llm, user_query):
+    steps = {}
+
+    # Step 1: Research
+    steps["research"] = research_agent(llm, user_query)
+
+    # Step 2: Writing
+    steps["writing"] = writing_agent(llm, steps["research"])
+
+    # Step 3: Review
+    steps["review"] = review_agent(llm, steps["writing"])
+
+    return steps
+
+
+# -------------------------------
+# UI INPUT
+# -------------------------------
+user_query = st.text_area("Enter your task")
+
+run = st.button("🚀 Run Agent System")
+
+# -------------------------------
+# MAIN
+# -------------------------------
+if run:
+
+    if not api_key:
+        st.error("Enter Gemini API key")
+        st.stop()
+
+    if not user_query:
+        st.error("Enter a task")
+        st.stop()
+
+    try:
+        llm = get_llm()
+
+        with st.spinner("Orchestrator running..."):
+            results = orchestrator(llm, user_query)
+
+        # -------------------------------
+        # OUTPUT
+        # -------------------------------
+        st.subheader("🧠 Orchestrator Output")
+
+        col1, col2, col3 = st.columns(3)
 
         with col1:
-            st.subheader("❌ Without Context")
-            st.write(no_rag)
+            st.markdown("### 🔍 Research Agent")
+            st.write(results["research"])
 
         with col2:
-            st.subheader("✅ With Context")
-            st.write(rag)
+            st.markdown("### ✍️ Writing Agent")
+            st.write(results["writing"])
+
+        with col3:
+            st.markdown("### ✅ Review Agent")
+            st.write(results["review"])
+
+        st.markdown("---")
+        st.subheader("🎯 Final Answer")
+        st.success(results["review"])
+
+    except Exception as e:
+        st.error(f"Error: {e}")
