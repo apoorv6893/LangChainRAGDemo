@@ -3,4 +3,4 @@ streamlit>=1.40
 langchain==0.1.16
 langchain-community==0.0.34
 
-langchain-google-genai==0.0.6
+huggingface_hub==0.23.0
