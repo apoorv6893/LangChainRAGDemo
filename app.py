@@ -3,18 +3,32 @@ import tempfile
 import time
 import os
 
+# LangChain imports
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_community.vectorstores import DocArrayInMemorySearch
 
+# Models
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 # -------------------------------
-# Page config
+# Page Config
 # -------------------------------
 st.set_page_config(page_title="RAG Demo", layout="wide")
-st.title("🔍 RAG Demo (End-to-End)")
+st.title("🔍 RAG Demo (Production-ready Demo)")
+
+st.markdown("""
+### 🧠 What happens behind the scenes?
+
+1. 📄 We read your documents  
+2. ✂️ Break them into smaller pieces  
+3. 🔢 Convert text into numbers (embeddings)  
+4. 🎯 Find most relevant pieces  
+5. 🤖 Answer using ONLY those pieces  
+
+This prevents guessing and improves accuracy.
+""")
 
 # -------------------------------
 # Sidebar
@@ -22,66 +36,62 @@ st.title("🔍 RAG Demo (End-to-End)")
 st.sidebar.header("⚙️ Settings")
 
 provider = st.sidebar.selectbox(
-    "LLM Provider ℹ️",
+    "LLM Provider",
     ["OpenAI", "Gemini"],
-    help="Choose which AI brain to use to answer your question"
+    help="Choose which AI model answers your question"
 )
 
 api_key = st.sidebar.text_input(
-    "API Key 🔐",
+    "API Key",
     type="password",
-    value=os.getenv("OPENAI_API_KEY", ""),
-    help="Your private key to access the AI model. It is not stored anywhere."
+    help="Your API key (not stored)"
 )
 
 model = st.sidebar.text_input(
-    "Model ℹ️",
+    "Model",
     value="gpt-4o-mini" if provider == "OpenAI" else "gemini-1.5-flash",
-    help="Different models have different quality and speed"
+    help="Model to use for answering"
 )
 
 chunk_size = st.sidebar.slider(
-    "Chunk Size 📦",
+    "Chunk Size",
     200, 1500, 500,
-    help="How big each piece of document is. Smaller = more precise, larger = more context"
+    help="How big each text piece is"
 )
 
 chunk_overlap = st.sidebar.slider(
-    "Chunk Overlap 🔁",
+    "Chunk Overlap",
     0, 300, 50,
-    help="How much chunks overlap. Helps avoid missing important info between splits"
+    help="Overlap between chunks to avoid missing context"
 )
 
 top_k = st.sidebar.slider(
-    "Top-K Results 🎯",
+    "Top-K Results",
     1, 10, 3,
-    help="How many relevant chunks we fetch before answering"
+    help="Number of relevant chunks used to answer"
 )
 
 debug_mode = st.sidebar.checkbox(
-    "Debug Mode 🛠",
-    help="Shows internal working like chunks, context, and timings"
+    "Debug Mode",
+    help="Show internal working"
 )
 
 # -------------------------------
-# File Upload
+# Inputs
 # -------------------------------
 uploaded_files = st.file_uploader(
-    "Upload documents (PDF or TXT) 📄",
+    "Upload PDF or TXT files",
     type=["pdf", "txt"],
-    accept_multiple_files=True,
-    help="Upload documents that the AI should use to answer"
+    accept_multiple_files=True
 )
 
-query = st.text_input(
-    "Ask a question ❓",
-    help="Ask anything based on your uploaded documents"
-)
+query = st.text_input("Ask a question")
+
+run = st.button("🚀 Run RAG Query")
 
 # -------------------------------
 # Helper Functions
 # -------------------------------
-
 def load_documents(files):
     docs = []
     for file in files:
@@ -99,13 +109,8 @@ def load_documents(files):
 
 
 def get_embeddings():
-    if provider == "OpenAI":
-        return OpenAIEmbeddings(api_key=api_key)
-    else:
-        return GoogleGenerativeAIEmbeddings(
-            google_api_key=api_key,
-            model="models/embedding-001"
-        )
+    # Always OpenAI for stability
+    return OpenAIEmbeddings(api_key=api_key)
 
 
 def get_llm():
@@ -133,77 +138,81 @@ Question:
 {query}
 """
 
-
 # -------------------------------
 # Main Execution
 # -------------------------------
+if run:
 
-if uploaded_files and query and api_key:
+    if not uploaded_files:
+        st.error("Upload at least one document")
+    elif not query:
+        st.error("Enter a question")
+    elif not api_key:
+        st.error("Enter API key")
+    else:
 
-    # Load docs
-    docs = load_documents(uploaded_files)
+        with st.spinner("Processing..."):
 
-    # Chunking
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap
-    )
-    chunks = splitter.split_documents(docs)
+            # Load
+            docs = load_documents(uploaded_files)
 
-    # Embeddings
-    start_embed = time.time()
-    embeddings = get_embeddings()
-    vectorstore = DocArrayInMemorySearch.from_documents(chunks, embeddings)
-    embed_time = time.time() - start_embed
+            # Chunk
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap
+            )
+            chunks = splitter.split_documents(docs)
 
-    # Retrieval
-    start_retrieval = time.time()
-    results = vectorstore.similarity_search_with_score(query, k=top_k)
-    retrieval_time = time.time() - start_retrieval
+            # Embeddings
+            start_embed = time.time()
+            embeddings = get_embeddings()
+            vectorstore = DocArrayInMemorySearch.from_documents(chunks, embeddings)
+            embed_time = time.time() - start_embed
 
-    retrieved_docs = [doc for doc, score in results]
-    context = "\n\n".join([doc.page_content for doc in retrieved_docs])
+            # Retrieval
+            start_retrieval = time.time()
+            results = vectorstore.similarity_search_with_score(query, k=top_k)
+            retrieval_time = time.time() - start_retrieval
 
-    # LLM (RAG)
-    start_llm = time.time()
-    llm = get_llm()
-    rag_response = llm.invoke(build_prompt(context, query))
-    llm_time = time.time() - start_llm
+            retrieved_docs = [doc for doc, _ in results]
+            context = "\n\n".join([doc.page_content for doc in retrieved_docs])
 
-    # -------------------------------
-    # Output
-    # -------------------------------
+            # LLM (RAG)
+            start_llm = time.time()
+            llm = get_llm()
+            rag_response = llm.invoke(build_prompt(context, query))
+            llm_time = time.time() - start_llm
 
-    st.subheader("✅ Answer (with RAG)")
-    st.write(rag_response.content)
+        # -------------------------------
+        # Outputs
+        # -------------------------------
 
-    # No-RAG comparison
-    st.subheader("❌ Answer (without RAG)")
-    no_rag = llm.invoke(query)
-    st.write(no_rag.content)
+        st.subheader("✅ Answer (with RAG)")
+        st.write(rag_response.content)
 
-    # Retrieved chunks
-    st.subheader("📄 Retrieved Chunks")
-    for i, (doc, score) in enumerate(results):
-        st.markdown(f"**Chunk {i+1} | Similarity Score: {score:.4f}**")
-        st.write(doc.page_content[:500])
+        st.subheader("❌ Answer (without RAG)")
+        st.write(llm.invoke(query).content)
 
-    # Debug
-    if debug_mode:
-        st.subheader("🛠 Debug Info")
+        # Retrieved chunks
+        st.subheader("📄 Retrieved Chunks")
 
-        st.markdown("### Context sent to model")
-        st.code(context[:2000])
+        for i, (doc, score) in enumerate(results):
+            st.markdown(f"""
+**Chunk {i+1}**
 
-        st.markdown("### Latency")
-        st.write(f"Embedding: {embed_time:.2f}s")
-        st.write(f"Retrieval: {retrieval_time:.2f}s")
-        st.write(f"LLM: {llm_time:.2f}s")
+📊 Relevance Score: {score:.4f}  
+👉 Lower score = better match
+""")
+            st.write(doc.page_content[:500])
 
-        st.write(f"Total chunks: {len(chunks)}")
+        # Latency
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Embedding Time", f"{embed_time:.2f}s")
+        col2.metric("Retrieval Time", f"{retrieval_time:.2f}s")
+        col3.metric("LLM Time", f"{llm_time:.2f}s")
 
-# -------------------------------
-# Empty state guidance
-# -------------------------------
-else:
-    st.info("Upload documents, enter API key, and ask a question to begin.")
+        # Debug
+        if debug_mode:
+            st.subheader("🛠 Debug Info")
+            st.code(context[:2000])
+            st.write(f"Total chunks: {len(chunks)}")
