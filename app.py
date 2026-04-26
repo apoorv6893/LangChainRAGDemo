@@ -5,45 +5,26 @@ from typing import List
 import os
 
 # -------------------------------
-# Robust Imports (Cloud-safe)
+# Imports (stable)
 # -------------------------------
 
-# Text splitter (fallback)
-try:
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
-except ImportError:
-    from langchain.text_splitter import RecursiveCharacterTextSplitter
-
-# Loaders (fallback)
-try:
-    from langchain_community.document_loaders import PyPDFLoader, TextLoader
-except ImportError:
-    from langchain.document_loaders import PyPDFLoader, TextLoader
-
-# Vector store (fallback)
-try:
-    from langchain_community.vectorstores import FAISS
-except ImportError:
-    from langchain.vectorstores import FAISS
-
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.document_loaders import PyPDFLoader, TextLoader
+from langchain_community.vectorstores import DocArrayInMemorySearch
 from langchain.schema import Document
 
-# OpenAI
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-
-# Gemini
 from langchain_google_genai import (
     ChatGoogleGenerativeAI,
     GoogleGenerativeAIEmbeddings
 )
 
 # -------------------------------
-# Utility Functions
+# Functions
 # -------------------------------
 
 def load_documents(uploaded_files) -> List[Document]:
     docs = []
-
     for file in uploaded_files:
         with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
             tmp_file.write(file.read())
@@ -55,7 +36,6 @@ def load_documents(uploaded_files) -> List[Document]:
             loader = TextLoader(tmp_path)
 
         docs.extend(loader.load())
-
     return docs
 
 
@@ -79,11 +59,7 @@ def get_embeddings(provider, api_key):
 
 def get_llm(provider, api_key, model):
     if provider == "OpenAI":
-        return ChatOpenAI(
-            api_key=api_key,
-            model=model,
-            temperature=0
-        )
+        return ChatOpenAI(api_key=api_key, model=model, temperature=0)
     else:
         return ChatGoogleGenerativeAI(
             google_api_key=api_key,
@@ -93,7 +69,7 @@ def get_llm(provider, api_key, model):
 
 
 def build_vectorstore(chunks, embeddings):
-    return FAISS.from_documents(chunks, embeddings)
+    return DocArrayInMemorySearch.from_documents(chunks, embeddings)
 
 
 def retrieve_chunks(vectorstore, query, k):
@@ -102,10 +78,8 @@ def retrieve_chunks(vectorstore, query, k):
 
 def build_prompt(context, query):
     return f"""
-You are a strict question-answering assistant.
-
-Answer ONLY using the provided context.
-If the answer is not in the context, say "I don't know."
+Answer ONLY using the context below.
+If not found, say "I don't know."
 
 Context:
 {context}
@@ -114,13 +88,12 @@ Question:
 {query}
 """
 
-
 # -------------------------------
-# Streamlit UI
+# UI
 # -------------------------------
 
 st.set_page_config(page_title="RAG Demo", layout="wide")
-st.title("🔍 RAG Demo (LangChain + Streamlit)")
+st.title("🔍 RAG Demo (Cloud Safe)")
 
 st.sidebar.header("⚙️ Configuration")
 
@@ -133,24 +106,18 @@ api_key = st.sidebar.text_input(
 )
 
 if provider == "OpenAI":
-    model = st.sidebar.selectbox(
-        "Model",
-        ["gpt-4o-mini", "gpt-4o"]
-    )
+    model = st.sidebar.selectbox("Model", ["gpt-4o-mini", "gpt-4o"])
 else:
-    model = st.sidebar.selectbox(
-        "Model",
-        ["gemini-1.5-pro", "gemini-1.5-flash"]
-    )
+    model = st.sidebar.selectbox("Model", ["gemini-1.5-pro", "gemini-1.5-flash"])
 
 chunk_size = st.sidebar.slider("Chunk Size", 200, 1500, 500)
 chunk_overlap = st.sidebar.slider("Chunk Overlap", 0, 300, 50)
-top_k = st.sidebar.slider("Top-K Retrieval", 1, 10, 3)
+top_k = st.sidebar.slider("Top-K", 1, 10, 3)
 
-debug_mode = st.sidebar.checkbox("🛠 Debug Mode")
+debug_mode = st.sidebar.checkbox("Debug Mode")
 
 uploaded_files = st.file_uploader(
-    "Upload documents (PDF or TXT)",
+    "Upload PDF/TXT",
     type=["pdf", "txt"],
     accept_multiple_files=True
 )
@@ -166,13 +133,11 @@ if uploaded_files and query and api_key:
     docs = load_documents(uploaded_files)
     chunks = split_documents(docs, chunk_size, chunk_overlap)
 
-    # Embeddings
     start_embed = time.time()
     embeddings = get_embeddings(provider, api_key)
     vectorstore = build_vectorstore(chunks, embeddings)
     embed_time = time.time() - start_embed
 
-    # Retrieval
     start_retrieval = time.time()
     results = retrieve_chunks(vectorstore, query, top_k)
     retrieval_time = time.time() - start_retrieval
@@ -180,24 +145,17 @@ if uploaded_files and query and api_key:
     retrieved_docs = [doc for doc, score in results]
     context = "\n\n".join([doc.page_content for doc in retrieved_docs])
 
-    # LLM (RAG)
     start_llm = time.time()
     llm = get_llm(provider, api_key, model)
-
-    rag_prompt = build_prompt(context, query)
-    rag_response = llm.invoke(rag_prompt)
+    response = llm.invoke(build_prompt(context, query))
     llm_time = time.time() - start_llm
 
-    # -------------------------------
     # Outputs
-    # -------------------------------
-
     st.subheader("✅ RAG Answer")
-    st.write(rag_response.content)
+    st.write(response.content)
 
     st.subheader("❌ No-RAG Answer")
-    no_rag_response = llm.invoke(f"Answer the question: {query}")
-    st.write(no_rag_response.content)
+    st.write(llm.invoke(query).content)
 
     st.subheader("📄 Retrieved Chunks")
     for i, (doc, score) in enumerate(results):
@@ -205,15 +163,8 @@ if uploaded_files and query and api_key:
         st.write(doc.page_content[:500])
 
     if debug_mode:
-        st.subheader("🛠 Debug Info")
-
-        st.markdown("### Context sent to LLM")
+        st.subheader("🛠 Debug")
         st.code(context[:2000])
-
-        st.markdown("### Latency Breakdown")
-        st.write(f"Embedding Time: {embed_time:.2f}s")
-        st.write(f"Retrieval Time: {retrieval_time:.2f}s")
-        st.write(f"LLM Time: {llm_time:.2f}s")
-
-        st.markdown("### Total Chunks")
-        st.write(len(chunks))
+        st.write(f"Embedding: {embed_time:.2f}s")
+        st.write(f"Retrieval: {retrieval_time:.2f}s")
+        st.write(f"LLM: {llm_time:.2f}s")
