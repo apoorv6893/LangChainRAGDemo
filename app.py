@@ -1,239 +1,210 @@
-# -------------------------------
-# COMPLETE RAG DEMO (UI + MODEL SELECTION)
-# -------------------------------
-
 import streamlit as st
-import time
 import tempfile
+import time
+from typing import List
+import os
 
-from langchain.text_splitter import CharacterTextSplitter
-from langchain.vectorstores import FAISS
-from langchain.document_loaders import PyPDFLoader, TextLoader
+# LangChain (new structure)
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.document_loaders import PyPDFLoader, TextLoader
+from langchain_community.vectorstores import FAISS
+from langchain.schema import Document
+
+# OpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+
+# Gemini
+from langchain_google_genai import (
+    ChatGoogleGenerativeAI,
+    GoogleGenerativeAIEmbeddings
+)
 
 # -------------------------------
-# UI CONFIG
+# Utility Functions
+# -------------------------------
+
+def load_documents(uploaded_files) -> List[Document]:
+    docs = []
+
+    for file in uploaded_files:
+        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+            tmp_file.write(file.read())
+            tmp_path = tmp_file.name
+
+        if file.name.endswith(".pdf"):
+            loader = PyPDFLoader(tmp_path)
+        else:
+            loader = TextLoader(tmp_path)
+
+        docs.extend(loader.load())
+
+    return docs
+
+
+def split_documents(docs, chunk_size, chunk_overlap):
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap
+    )
+    return splitter.split_documents(docs)
+
+
+def get_embeddings(provider, api_key):
+    if provider == "OpenAI":
+        return OpenAIEmbeddings(api_key=api_key)
+    else:
+        return GoogleGenerativeAIEmbeddings(
+            google_api_key=api_key,
+            model="models/embedding-001"
+        )
+
+
+def get_llm(provider, api_key, model):
+    if provider == "OpenAI":
+        return ChatOpenAI(
+            api_key=api_key,
+            model=model,
+            temperature=0
+        )
+    else:
+        return ChatGoogleGenerativeAI(
+            google_api_key=api_key,
+            model=model,
+            temperature=0
+        )
+
+
+def build_vectorstore(chunks, embeddings):
+    return FAISS.from_documents(chunks, embeddings)
+
+
+def retrieve_chunks(vectorstore, query, k):
+    return vectorstore.similarity_search_with_score(query, k=k)
+
+
+def build_prompt(context, query):
+    return f"""
+You are a strict question-answering assistant.
+
+Answer ONLY using the provided context.
+If the answer is not in the context, say "I don't know."
+
+Context:
+{context}
+
+Question:
+{query}
+"""
+
+
+# -------------------------------
+# Streamlit UI
 # -------------------------------
 
 st.set_page_config(page_title="RAG Demo", layout="wide")
-st.title("📄 RAG Demo with LangChain")
+st.title("🔍 RAG Demo (LangChain + Streamlit)")
 
-# -------------------------------
-# SIDEBAR: API + MODEL CONFIG
-# -------------------------------
+# Sidebar
+st.sidebar.header("⚙️ Configuration")
 
-st.sidebar.header("🔐 API Configuration")
-
-provider = st.sidebar.selectbox(
-    "Select Provider",
-    ["OpenAI", "Gemini"]
-)
+provider = st.sidebar.selectbox("LLM Provider", ["OpenAI", "Gemini"])
 
 api_key = st.sidebar.text_input(
-    "Enter API Key",
+    "API Key",
+    value=os.getenv("OPENAI_API_KEY", ""),
     type="password"
 )
 
 if provider == "OpenAI":
-    model_name = st.sidebar.selectbox(
-        "Select Model",
+    model = st.sidebar.selectbox(
+        "Model",
         ["gpt-4o-mini", "gpt-4o"]
     )
-elif provider == "Gemini":
-    model_name = st.sidebar.selectbox(
-        "Select Model",
-        ["gemini-1.5-flash", "gemini-1.5-pro"]
+else:
+    model = st.sidebar.selectbox(
+        "Model",
+        ["gemini-1.5-pro", "gemini-1.5-flash"]
     )
 
-if not api_key:
-    st.warning("Please enter your API key to continue.")
-    st.stop()
+chunk_size = st.sidebar.slider("Chunk Size", 200, 1500, 500)
+chunk_overlap = st.sidebar.slider("Chunk Overlap", 0, 300, 50)
+top_k = st.sidebar.slider("Top-K Retrieval", 1, 10, 3)
 
-st.sidebar.success(f"Using {provider} - {model_name}")
+debug_mode = st.sidebar.checkbox("🛠 Debug Mode")
 
-# -------------------------------
-# SIDEBAR: RAG CONTROLS
-# -------------------------------
+# Upload
+uploaded_files = st.file_uploader(
+    "Upload documents (PDF or TXT)",
+    type=["pdf", "txt"],
+    accept_multiple_files=True
+)
 
-st.sidebar.header("⚙️ RAG Controls")
-
-chunk_size = st.sidebar.slider("Chunk Size", 100, 1000, 500)
-chunk_overlap = st.sidebar.slider("Chunk Overlap", 0, 200, 50)
-top_k = st.sidebar.slider("Top-K Results", 1, 5, 3)
-
-# -------------------------------
-# INIT MODEL + EMBEDDINGS
-# -------------------------------
-
-if provider == "OpenAI":
-    from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-
-    llm = ChatOpenAI(
-        model=model_name,
-        temperature=0,
-        api_key=api_key
-    )
-
-    embeddings = OpenAIEmbeddings(api_key=api_key)
-
-elif provider == "Gemini":
-    from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-
-    llm = ChatGoogleGenerativeAI(
-        model=model_name,
-        google_api_key=api_key,
-        temperature=0
-    )
-
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/embedding-001",
-        google_api_key=api_key
-    )
+query = st.text_input("Ask a question")
 
 # -------------------------------
-# FILE UPLOAD
+# Execution
 # -------------------------------
 
-uploaded_file = st.file_uploader("Upload PDF or TXT", type=["pdf", "txt"])
+if uploaded_files and query and api_key:
 
-if uploaded_file:
+    # Load docs
+    docs = load_documents(uploaded_files)
 
-    with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
-        tmp_file.write(uploaded_file.read())
-        file_path = tmp_file.name
+    # Split
+    chunks = split_documents(docs, chunk_size, chunk_overlap)
 
-    st.success("File uploaded!")
+    # Embeddings + Vector store
+    start_embed = time.time()
+    embeddings = get_embeddings(provider, api_key)
+    vectorstore = build_vectorstore(chunks, embeddings)
+    embed_time = time.time() - start_embed
 
-    # -------------------------------
-    # LOAD DOCUMENT
-    # -------------------------------
+    # Retrieval
+    start_retrieval = time.time()
+    results = retrieve_chunks(vectorstore, query, top_k)
+    retrieval_time = time.time() - start_retrieval
 
-    if uploaded_file.name.endswith(".pdf"):
-        loader = PyPDFLoader(file_path)
-    else:
-        loader = TextLoader(file_path)
+    retrieved_docs = [doc for doc, score in results]
+    context = "\n\n".join([doc.page_content for doc in retrieved_docs])
 
-    documents = loader.load()
-    st.write(f"Loaded {len(documents)} document(s)")
+    # LLM (RAG)
+    start_llm = time.time()
+    llm = get_llm(provider, api_key, model)
 
-    # -------------------------------
-    # SPLIT DOCUMENT
-    # -------------------------------
-
-    splitter = CharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap
-    )
-
-    docs = splitter.split_documents(documents)
-    st.write(f"Split into {len(docs)} chunks")
+    rag_prompt = build_prompt(context, query)
+    rag_response = llm.invoke(rag_prompt)
+    llm_time = time.time() - start_llm
 
     # -------------------------------
-    # EMBEDDINGS + VECTOR STORE
+    # Outputs
     # -------------------------------
 
-    embed_start = time.time()
+    st.subheader("✅ RAG Answer")
+    st.write(rag_response.content)
 
-    db = FAISS.from_documents(docs, embeddings)
+    # No-RAG baseline
+    st.subheader("❌ No-RAG Answer")
+    no_rag_response = llm.invoke(f"Answer the question: {query}")
+    st.write(no_rag_response.content)
 
-    embed_time = time.time() - embed_start
-    st.success(f"Embeddings created in {embed_time:.2f}s")
+    # Retrieved chunks
+    st.subheader("📄 Retrieved Chunks")
 
-    # -------------------------------
-    # QUERY INPUT
-    # -------------------------------
+    for i, (doc, score) in enumerate(results):
+        st.markdown(f"**Chunk {i+1} | Score: {score:.4f}**")
+        st.write(doc.page_content[:500])
 
-    query = st.text_input("Ask a question")
+    # Debug
+    if debug_mode:
+        st.subheader("🛠 Debug Info")
 
-    if query:
+        st.markdown("### Context sent to LLM")
+        st.code(context[:2000])
 
-        # -------------------------------
-        # RETRIEVAL
-        # -------------------------------
+        st.markdown("### Latency Breakdown")
+        st.write(f"Embedding Time: {embed_time:.2f}s")
+        st.write(f"Retrieval Time: {retrieval_time:.2f}s")
+        st.write(f"LLM Time: {llm_time:.2f}s")
 
-        retrieval_start = time.time()
-
-        results = db.similarity_search_with_score(query, k=top_k)
-
-        retrieval_time = time.time() - retrieval_start
-
-        st.subheader("🔍 Retrieved Chunks")
-
-        context_texts = []
-
-        for i, (doc, score) in enumerate(results):
-            source = doc.metadata.get("source", "Unknown")
-
-            st.markdown(f"""
-            **Chunk {i+1}**
-            - Score: `{score:.4f}` (lower = more similar)
-            - Source: `{source}`
-            """)
-
-            st.write(doc.page_content)
-            st.write("---")
-
-            context_texts.append(doc.page_content)
-
-        # -------------------------------
-        # RAG ANSWER
-        # -------------------------------
-
-        llm_start = time.time()
-
-        context = "\n".join(context_texts)
-
-        rag_prompt = f"""
-        Answer ONLY using the context below.
-        If answer is not present, say "I don't know".
-
-        Context:
-        {context}
-
-        Question:
-        {query}
-        """
-
-        rag_answer = llm.predict(rag_prompt)
-
-        rag_time = time.time() - llm_start
-
-        # -------------------------------
-        # NO-RAG ANSWER
-        # -------------------------------
-
-        no_rag_answer = llm.predict(query)
-
-        # -------------------------------
-        # OUTPUT
-        # -------------------------------
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.subheader("✅ RAG Answer")
-            st.write(rag_answer)
-
-        with col2:
-            st.subheader("⚠️ No RAG Answer")
-            st.write(no_rag_answer)
-
-        # -------------------------------
-        # LATENCY
-        # -------------------------------
-
-        st.subheader("⏱️ Latency Breakdown")
-
-        st.write(f"""
-        - Embedding time: {embed_time:.2f}s  
-        - Retrieval time: {retrieval_time:.2f}s  
-        - LLM time: {rag_time:.2f}s  
-        """)
-
-        # -------------------------------
-        # DEBUG
-        # -------------------------------
-
-        with st.expander("🧠 Debug Info"):
-            st.write("Query:", query)
-            st.write("Context used:", context)
-
+        st.markdown("### Total Chunks")
+        st.write(len(chunks))
