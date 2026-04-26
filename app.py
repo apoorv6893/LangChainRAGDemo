@@ -17,7 +17,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 # Page config
 # -------------------------------
 st.set_page_config(page_title="RAG Demo", layout="wide")
-st.title("🔍 RAG Demo (Free + Gemini)")
+st.title("🔍 RAG Demo (Free Embeddings + Gemini)")
 
 st.markdown("""
 ### 🧠 What happens behind the scenes?
@@ -28,7 +28,7 @@ st.markdown("""
 4. 🎯 Retrieve relevant chunks  
 5. 🤖 Answer using ONLY those chunks  
 
-No paid embedding APIs used.
+Uses **free embeddings** and **Gemini for generation**.
 """)
 
 # -------------------------------
@@ -43,8 +43,8 @@ gemini_key = st.sidebar.text_input(
 
 model = st.sidebar.text_input(
     "Model",
-    value="gemini-1.5-flash",
-    help="Try gemini-1.5-flash or gemini-2.5-flash"
+    value="gemini-1.5-flash-latest",
+    help="Reliable choice for free quota usage"
 )
 
 chunk_size = st.sidebar.slider("Chunk Size", 200, 1500, 500)
@@ -92,12 +92,26 @@ def get_embeddings():
     )
 
 
-def get_llm():
+def get_llm(model_name):
     return ChatGoogleGenerativeAI(
         google_api_key=gemini_key,
-        model=model,
+        model=model_name,
         temperature=0
     )
+
+
+def safe_invoke(llm, prompt):
+    """Retry with exponential backoff + fallback model."""
+    delays = [1, 2, 4]  # retries
+    for d in delays:
+        try:
+            return llm.invoke(prompt)
+        except Exception:
+            time.sleep(d)
+
+    # fallback
+    fallback_llm = get_llm("gemini-pro")
+    return fallback_llm.invoke(prompt)
 
 
 def build_prompt(context, query):
@@ -113,6 +127,7 @@ Context:
 Question:
 {query}
 """
+
 
 # -------------------------------
 # Main
@@ -158,8 +173,8 @@ if run:
 
         # LLM (RAG)
         t3 = time.time()
-        llm = get_llm()
-        rag_response = llm.invoke(build_prompt(context, query))
+        llm = get_llm(model)
+        rag_response = safe_invoke(llm, build_prompt(context, query))
         llm_time = time.time() - t3
 
     # -------------------------------
@@ -169,7 +184,7 @@ if run:
     st.write(rag_response.content)
 
     st.subheader("❌ Answer (without RAG)")
-    st.write(llm.invoke(query).content)
+    st.write(safe_invoke(llm, query).content)
 
     st.subheader("📄 Retrieved Chunks")
 
