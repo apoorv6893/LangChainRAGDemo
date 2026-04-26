@@ -26,7 +26,7 @@ api_key = st.sidebar.text_input("Gemini API Key", type="password")
 model = st.sidebar.selectbox(
     "Select Gemini Model",
     [
-        "models/gemini-1.5-flash",
+        "models/gemini-2.5-flash",
         "models/gemini-1.5-pro"
     ]
 )
