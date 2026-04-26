@@ -4,10 +4,28 @@ import time
 from typing import List
 import os
 
-# LangChain (new structure)
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import PyPDFLoader, TextLoader
-from langchain_community.vectorstores import FAISS
+# -------------------------------
+# Robust Imports (Cloud-safe)
+# -------------------------------
+
+# Text splitter (fallback)
+try:
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+except ImportError:
+    from langchain.text_splitter import RecursiveCharacterTextSplitter
+
+# Loaders (fallback)
+try:
+    from langchain_community.document_loaders import PyPDFLoader, TextLoader
+except ImportError:
+    from langchain.document_loaders import PyPDFLoader, TextLoader
+
+# Vector store (fallback)
+try:
+    from langchain_community.vectorstores import FAISS
+except ImportError:
+    from langchain.vectorstores import FAISS
+
 from langchain.schema import Document
 
 # OpenAI
@@ -104,7 +122,6 @@ Question:
 st.set_page_config(page_title="RAG Demo", layout="wide")
 st.title("🔍 RAG Demo (LangChain + Streamlit)")
 
-# Sidebar
 st.sidebar.header("⚙️ Configuration")
 
 provider = st.sidebar.selectbox("LLM Provider", ["OpenAI", "Gemini"])
@@ -132,7 +149,6 @@ top_k = st.sidebar.slider("Top-K Retrieval", 1, 10, 3)
 
 debug_mode = st.sidebar.checkbox("🛠 Debug Mode")
 
-# Upload
 uploaded_files = st.file_uploader(
     "Upload documents (PDF or TXT)",
     type=["pdf", "txt"],
@@ -147,13 +163,10 @@ query = st.text_input("Ask a question")
 
 if uploaded_files and query and api_key:
 
-    # Load docs
     docs = load_documents(uploaded_files)
-
-    # Split
     chunks = split_documents(docs, chunk_size, chunk_overlap)
 
-    # Embeddings + Vector store
+    # Embeddings
     start_embed = time.time()
     embeddings = get_embeddings(provider, api_key)
     vectorstore = build_vectorstore(chunks, embeddings)
@@ -182,19 +195,15 @@ if uploaded_files and query and api_key:
     st.subheader("✅ RAG Answer")
     st.write(rag_response.content)
 
-    # No-RAG baseline
     st.subheader("❌ No-RAG Answer")
     no_rag_response = llm.invoke(f"Answer the question: {query}")
     st.write(no_rag_response.content)
 
-    # Retrieved chunks
     st.subheader("📄 Retrieved Chunks")
-
     for i, (doc, score) in enumerate(results):
         st.markdown(f"**Chunk {i+1} | Score: {score:.4f}**")
         st.write(doc.page_content[:500])
 
-    # Debug
     if debug_mode:
         st.subheader("🛠 Debug Info")
 
