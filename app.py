@@ -1,20 +1,16 @@
 import streamlit as st
 from langchain_google_genai import ChatGoogleGenerativeAI
 
+from langchain.prompts import PromptTemplate
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.runnables import RunnableLambda, RunnableBranch
+from pydantic import BaseModel, Field
+
 # -------------------------------
 # Page
 # -------------------------------
-st.set_page_config(page_title="Prompt Quality Agent", layout="wide")
-st.title("🧠 Prompt Quality Agent")
-
-st.markdown("""
-This app:
-1. Evaluates your prompt
-2. Scores it (0–10)
-3. Explains what's missing
-4. Decides whether to fix it
-5. Improves it if needed
-""")
+st.set_page_config(page_title="Prompt Quality Agent (LangChain)", layout="wide")
+st.title("🧠 Prompt Quality Agent — LangChain Pipeline")
 
 # -------------------------------
 # Sidebar
@@ -32,6 +28,7 @@ model = st.sidebar.selectbox(
 )
 
 temperature = st.sidebar.slider("Creativity", 0.0, 1.0, 0.2)
+threshold = st.sidebar.slider("Minimum Acceptable Score", 1, 10, 7)
 
 # -------------------------------
 # LLM
@@ -44,48 +41,97 @@ def get_llm():
     )
 
 # -------------------------------
-# AGENTS
+# SCHEMA (Structured Output)
 # -------------------------------
+class Evaluation(BaseModel):
+    score: int = Field(description="Score from 0 to 10")
+    reason: str
+    missing: str
+    verdict: str
 
-def evaluate_prompt(llm, prompt):
-    eval_prompt = f"""
+parser = PydanticOutputParser(pydantic_object=Evaluation)
+
+# -------------------------------
+# PROMPT TEMPLATES
+# -------------------------------
+eval_prompt = PromptTemplate.from_template(
+"""
 You are a PROMPT QUALITY EVALUATOR.
 
-Evaluate the prompt based on:
+Evaluate based on:
 - clarity
 - specificity
 - context
 - structure
 
-Return STRICT JSON:
+Return ONLY JSON.
 
-{{
-  "score": (0-10),
-  "reason": "...",
-  "missing": "...",
-  "verdict": "good" or "needs_improvement"
-}}
+{format_instructions}
 
 Prompt:
 {prompt}
 """
-    return llm.invoke(eval_prompt).content
+)
 
-
-def improve_prompt(llm, prompt, missing):
-    fix_prompt = f"""
+improve_prompt = PromptTemplate.from_template(
+"""
 You are a PROMPT IMPROVEMENT AGENT.
 
-Improve the prompt by fixing:
+Fix the following issues:
 {missing}
 
-Keep intent same but make it clearer and more effective.
+Keep intent same.
 
-Original Prompt:
+Prompt:
 {prompt}
 """
-    return llm.invoke(fix_prompt).content
+)
 
+# -------------------------------
+# CHAINS
+# -------------------------------
+def build_chains(llm):
+
+    # Evaluator chain
+    evaluator_chain = (
+        eval_prompt.partial(format_instructions=parser.get_format_instructions())
+        | llm
+        | parser
+    )
+
+    # Improver chain
+    improver_chain = improve_prompt | llm
+
+    # Decision function
+    def decision_fn(data):
+        if data["evaluation"].score < threshold:
+            return "improve"
+        return "accept"
+
+    # Combine evaluation with original input
+    def attach_input(evaluation, original):
+        return {
+            "evaluation": evaluation,
+            "original": original
+        }
+
+    # Branch logic
+    branch = RunnableBranch(
+        (lambda x: x["evaluation"].score < threshold,
+         RunnableLambda(lambda x: {
+             "final": improver_chain.invoke({
+                 "prompt": x["original"],
+                 "missing": x["evaluation"].missing
+             }).content,
+             "evaluation": x["evaluation"]
+         })),
+        RunnableLambda(lambda x: {
+            "final": x["original"],
+            "evaluation": x["evaluation"]
+        })
+    )
+
+    return evaluator_chain, branch
 
 # -------------------------------
 # UI
@@ -109,28 +155,40 @@ if run:
 
     llm = get_llm()
 
-    with st.spinner("Evaluating prompt..."):
-        evaluation = evaluate_prompt(llm, user_prompt)
+    evaluator_chain, branch = build_chains(llm)
 
-    st.subheader("📊 Evaluation Output")
-    st.code(evaluation)
+    with st.spinner("Running LangChain pipeline..."):
 
-    # crude parsing (simple approach)
-    eval_lower = evaluation.lower()
+        # Step 1: Evaluate
+        evaluation = evaluator_chain.invoke({"prompt": user_prompt})
 
-    if "needs_improvement" in eval_lower or '"score":' in eval_lower:
+        # Step 2: Attach original input
+        state = {
+            "evaluation": evaluation,
+            "original": user_prompt
+        }
 
-        if "needs_improvement" in eval_lower:
-            st.warning("⚠️ Prompt needs improvement")
+        # Step 3: Branch (decision + improvement)
+        result = branch.invoke(state)
 
-            with st.spinner("Improving prompt..."):
-                improved = improve_prompt(llm, user_prompt, evaluation)
+    # -------------------------------
+    # OUTPUT
+    # -------------------------------
+    st.subheader("📊 Evaluation")
 
-            st.subheader("✨ Improved Prompt")
-            st.success(improved)
+    st.metric("Score", f"{evaluation.score}/10")
+    st.progress(evaluation.score / 10)
 
-        else:
-            st.success("✅ Prompt looks good")
+    st.subheader("🧠 Reason")
+    st.write(evaluation.reason)
 
+    st.subheader("⚠️ Missing")
+    st.write(evaluation.missing)
+
+    if evaluation.score < threshold:
+        st.warning("⚠️ Prompt needs improvement")
     else:
-        st.info("Could not parse evaluation clearly. Showing raw output.")
+        st.success("✅ Prompt is good")
+
+    st.subheader("✨ Final Prompt")
+    st.success(result["final"])
